@@ -253,18 +253,25 @@ static inline int cpu_is_imx6dl(struct mxc_hdmi *hdmi)
 {
 	return hdmi->cpu_type == IMX6DL_HDMI;
 }
-#ifdef DEBUG
-static void dump_fb_videomode(struct fb_videomode *m)
+
+static inline void get_refresh_str(struct fb_videomode *m, char *refresh, bool ntsc_mode)
 {
-	pr_debug("fb_videomode = %d %d %d %d %d %d %d %d %d %d %d %d %d\n",
-		m->refresh, m->xres, m->yres, m->pixclock, m->left_margin,
+	snprintf(refresh, 10, "%u.%uHz", m->refresh - (int)ntsc_mode,
+				m->refresh * (int)(ntsc_mode ? 999 : 1000) % 1000);
+}
+
+static void dump_fb_videomode(struct fb_videomode *m, struct mxc_hdmi *hdmi)
+{
+	char refresh[10];
+	bool ntsc = hdmi->fbi && (hdmi->fbi->flags & FBINFO_TIMING_NTSC) && try_ntsc(hdmi->fbi->mode);
+
+	get_refresh_str(m, refresh, ntsc);
+	pr_debug("fb_videomode = %ux%u%c-%s (%ups/%lukHz) %u %u %u %u %u %u %u %u %u\n",
+		m->xres, m->yres, m->vmode & FB_VMODE_INTERLACED ? 'i' : 'p',
+		refresh, m->pixclock, mxcPICOS2KHZ(m->pixclock, hdmi->fbi), m->left_margin,
 		m->right_margin, m->upper_margin, m->lower_margin,
 		m->hsync_len, m->vsync_len, m->sync, m->vmode, m->flag);
 }
-#else
-static void dump_fb_videomode(struct fb_videomode *m)
-{}
-#endif
 
 static ssize_t mxc_hdmi_show_name(struct device *dev,
 		struct device_attribute *attr, char *buf)
@@ -1557,7 +1564,7 @@ static void hdmi_av_composer(struct mxc_hdmi *hdmi)
 	vmode->mHSyncPolarity = ((fb_mode.sync & FB_SYNC_HOR_HIGH_ACT) != 0);
 	vmode->mVSyncPolarity = ((fb_mode.sync & FB_SYNC_VERT_HIGH_ACT) != 0);
 	vmode->mInterlaced = ((fb_mode.vmode & FB_VMODE_INTERLACED) != 0);
-	vmode->mPixelClock = (u32) (mxcPICOS2KHZ(fb_mode.pixclock, fb_mode.vmode) * 1000UL);
+	vmode->mPixelClock = (u32) (mxcPICOS2KHZ(fb_mode.pixclock, fbi) * 1000UL);
 
 	dev_dbg(&hdmi->pdev->dev, "final pixclk = %d\n", vmode->mPixelClock);
 
@@ -1574,7 +1581,7 @@ static void hdmi_av_composer(struct mxc_hdmi *hdmi)
 		HDMI_FC_INVIDCONF_DE_IN_POLARITY_ACTIVE_HIGH :
 		HDMI_FC_INVIDCONF_DE_IN_POLARITY_ACTIVE_LOW);
 
-	if (hdmi->vic == 39)
+	if (fbi->flags & FBINFO_TIMING_NTSC)
 		inv_val |= HDMI_FC_INVIDCONF_R_V_BLANK_IN_OSC_ACTIVE_HIGH;
 	else
 		inv_val |= (vmode->mInterlaced ?
@@ -2043,7 +2050,7 @@ static void mxc_hdmi_set_mode(struct mxc_hdmi *hdmi, int edid_status)
 	}
 
 	fb_var_to_videomode(&m, &var);
-	dump_fb_videomode(&m);
+	dump_fb_videomode(&m, hdmi);
 	mode = mxc_fb_find_nearest_mode(&m, &hdmi->fbi->modelist, false);
 
 	if (mode) {
@@ -2143,7 +2150,7 @@ static int mxc_hdmi_power_on(struct mxc_dispdrv_handle *disp,
 {
 	struct mxc_hdmi *hdmi = mxc_dispdrv_getdata(disp);
 	mxc_hdmi_phy_init(hdmi);
-	hdmi_clk_regenerator_update_pixel_clock(fbi->var.pixclock, fbi->var.vmode);
+	hdmi_clk_regenerator_update_pixel_clock(fbi->var.pixclock, fbi);
 	return 0;
 }
 
@@ -2334,7 +2341,7 @@ static void mxc_hdmi_setup(struct mxc_hdmi *hdmi, unsigned long event)
 	dev_dbg(&hdmi->pdev->dev, "%s\n", __func__);
 
 	fb_var_to_videomode(&m, &hdmi->fbi->var);
-	dump_fb_videomode(&m);
+	dump_fb_videomode(&m, hdmi);
 
 	dev_dbg(&hdmi->pdev->dev, "%s - video mode changed\n", __func__);
 
@@ -2817,7 +2824,7 @@ static int mxc_hdmi_disp_init(struct mxc_dispdrv_handle *disp,
 		pr_err("%s: could not find mode in modelist\n", __func__);
 		return -1;
 	}
-	dump_fb_videomode((struct fb_videomode *)mode);
+	dump_fb_videomode((struct fb_videomode *)mode, hdmi);
 	/* Save default video mode */
 	memcpy(&hdmi->default_mode, mode, sizeof(struct fb_videomode));
 
